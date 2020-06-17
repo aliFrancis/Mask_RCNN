@@ -22,6 +22,8 @@ import keras.backend as K
 import keras.layers as KL
 import keras.engine as KE
 import keras.models as KM
+import imgaug
+import time
 
 from mrcnn import utils
 
@@ -1068,7 +1070,7 @@ def rpn_bbox_loss_graph(config, target_bbox, rpn_match, rpn_bbox):
                                    config.IMAGES_PER_GPU)
 
     loss = smooth_l1_loss(target_bbox, rpn_bbox)
-    
+
     loss = K.switch(tf.size(loss) > 0, K.mean(loss), tf.constant(0.0))
     return loss
 
@@ -1230,7 +1232,7 @@ def load_image_gt(dataset, config, image_id, augment=False, augmentation=None,
     # Augmentation
     # This requires the imgaug lib (https://github.com/aleju/imgaug)
     if augmentation:
-        import imgaug
+
 
         # Augmenters that are safe to apply to masks
         # Some, such as Affine, have settings that make them unsafe, so always
@@ -1243,20 +1245,33 @@ def load_image_gt(dataset, config, image_id, augment=False, augmentation=None,
             """Determines which augmenters to apply to masks."""
             return augmenter.__class__.__name__ in MASK_AUGMENTERS
 
-        # Store shapes before augmentation to compare
-        image_shape = image.shape
-        mask_shape = mask.shape
-        # Make augmenters deterministic to apply similarly to images and masks
-        det = augmentation.to_deterministic()
-        image = det.augment_image(image)
-        # Change mask to np.uint8 because imgaug doesn't support np.bool
-        mask = det.augment_image(mask.astype(np.uint8),
-                                 hooks=imgaug.HooksImages(activator=hook))
-        # Verify that shapes didn't change
-        assert image.shape == image_shape, "Augmentation shouldn't change image size"
-        assert mask.shape == mask_shape, "Augmentation shouldn't change mask size"
-        # Change mask back to bool
-        mask = mask.astype(np.bool)
+
+
+        # # Store shapes before augmentation to compare
+        # image_shape = image.shape
+        # mask_shape = mask.shape
+
+        # # Make augmenters deterministic to apply similarly to images and masks
+        # det = augmentation.to_deterministic()
+        # image = det.augment_image(image)
+        # # Change mask to np.uint8 because imgaug doesn't support np.bool
+        # if mask.shape[-1]>1:
+        #     mask = det.augment_images(mask.astype(np.uint8),
+        #                          hooks=imgaug.HooksImages(activator=hook))
+        # else:
+        #     mask = det.augment_image(mask.astype(np.uint8),
+        #                          hooks=imgaug.HooksImages(activator=hook))
+        #
+        # # Verify that shapes didn't change
+        # assert image.shape == image_shape, "Augmentation shouldn't change image size"
+        # assert mask.shape == mask_shape, "Augmentation shouldn't change mask size"
+        # # Change mask back to bool
+        # mask = mask.astype(np.bool)
+        # image = np.expand_dims(image,0)
+        mask = np.expand_dims(mask,0)
+        image, mask = augmentation(image=image, segmentation_maps=mask)
+        # image = image[0,...]
+        mask = mask[0,...]
 
     # Note that some boxes might be all zeros if the corresponding mask got cropped out.
     # and here is to filter them out
@@ -2188,6 +2203,7 @@ class MaskRCNN():
             loss=[None] * len(self.keras_model.outputs))
 
         # Add metrics for losses
+        self.keras_model.metrics_tensors = []
         for name in loss_names:
             if name in self.keras_model.metrics_names:
                 continue
@@ -2359,8 +2375,7 @@ class MaskRCNN():
         if os.name is 'nt':
             workers = 0
         else:
-            workers = multiprocessing.cpu_count()
-
+            workers = multiprocessing.cpu_count() - 2
         self.keras_model.fit_generator(
             train_generator,
             initial_epoch=self.epoch,
@@ -2369,7 +2384,7 @@ class MaskRCNN():
             callbacks=callbacks,
             validation_data=val_generator,
             validation_steps=self.config.VALIDATION_STEPS,
-            max_queue_size=100,
+            max_queue_size=40,
             workers=workers,
             use_multiprocessing=True,
         )
